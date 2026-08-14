@@ -29,12 +29,20 @@ L/M > rc + 2*max(r_i)
 Si `max(r_i) -> 0` se recupera `L/M > rc`. El código (`Geometry.minCellSize`,
 `CellIndexMethod.maxM`) valida esto y lanza error si `M` supera el máximo.
 
+Con los parámetros por defecto (`L=20`, `rc=1`, `r_i ≤ 0.26`) esto da
+**M máximo = 13** (`20 / (1 + 2*0.26) = 13.15`).
+
 ## Build
 
 ```bash
-cd /Users/motegui/ss/tp1
-./build.sh
+./build.sh        # compila a out/classes
+./run_check.sh    # verifica el CIM contra fuerza bruta
 ```
+
+`run_check.sh` corre `CheckCorrectness`: compara el resultado del CIM contra la
+fuerza bruta para todo `M` válido, con y sin condiciones periódicas, y chequea
+la simetría de la relación de vecindad y que la consulta por partícula de la GUI
+coincida con el cálculo global.
 
 ## 1) App interactiva (click -> vecinos + cálculo)
 
@@ -62,11 +70,11 @@ Genera `data/static.txt` (N, L, radios) y `data/dynamic.txt` (t0, posiciones).
 ## 3) Correr CIM por línea de comandos (output del punto 1)
 
 ```bash
-./run_cim.sh data/static.txt data/dynamic.txt -M 15 -rc 1 --focus 0 \
+./run_cim.sh data/static.txt data/dynamic.txt -M 13 -rc 1 --focus 0 \
   -o out/neighbors.txt --figure out/neighbors.png
 
 # Con condiciones periódicas:
-./run_cim.sh data/static.txt data/dynamic.txt -M 15 -rc 1 --periodic --figure out/neighbors_pbc.png
+./run_cim.sh data/static.txt data/dynamic.txt -M 13 -rc 1 --periodic --figure out/neighbors_pbc.png
 ```
 
 Imprime el `M` máximo permitido, el tiempo de ejecución, escribe la lista de
@@ -79,21 +87,45 @@ sus vecinos resaltados.
 ./run_benchmark_m.sh --repeats 100 -o figures/time_vs_M.png
 ```
 
-Toma dos valores de N (intermedio y el máximo posible sin solapar en L=20),
-varía M de 1 (fuerza bruta) al máximo permitido, repite la medición y grafica
-media ± desvío estándar (con escalas log si el rango de valores lo amerita).
-También escribe un CSV con los datos crudos.
+Toma dos valores de N (la mitad del máximo y el máximo posible sin solapar en
+L=20), varía M de 1 (fuerza bruta) al máximo permitido, repite la medición y
+grafica media ± desvío estándar (con escalas log si el rango lo amerita).
+Escribe además un CSV con los mismos datos, al lado de la figura.
+
+Resultado: la curva **decrece monótonamente hasta el M máximo permitido**, así
+que el óptimo es **M=13** — el criterio `L/M > rc + 2·max(r)` corta antes de que
+el costo de recorrer celdas vacías empiece a dominar. El punto `M=2` queda por
+encima de la fuerza bruta: con una grilla tan gruesa cada partícula termina
+comparándose contra todas las demás igual que en `M=1`, pero pagando además el
+costo de armar y recorrer la grilla.
 
 ## 5) Punto 4 — tiempo vs N
 
 ```bash
-# Elegí el M óptimo según la curva anterior, p.ej. M=15:
-./run_benchmark_n.sh -M 15 --repeats 100 -o figures/time_vs_N.png
+./run_benchmark_n.sh -M 13 --repeats 100 -o figures/time_vs_N.png
 ```
 
 - **4.1**: L=20 fijo, tiempo vs N ("densidad libre").
 - **4.2**: se toma una densidad intermedia de 4.1 y se agranda L junto con N
   para mantenerla constante ("densidad fija"), superpuesta en el mismo gráfico.
+
+En 4.2 **M no se mantiene fijo, sino el tamaño de celda `h = L/M`**. Lo que el
+punto 3 optimiza no es el número de celdas sino su tamaño relativo a `rc`: es `h`
+lo que determina cuántas partículas se revisan por celda. Dejando `M=13` mientras
+L crece, `h` crece con L, cada celda acumula O(L²) partículas y el CIM degenera a
+O(N²) — y para los L chicos `M=13` viola `L/M > rc + 2·max(r)`, con lo que esos
+puntos ni siquiera se pueden medir. Escalando M con L (`M = ⌊L/h⌋`) la comparación
+es a igual carga por celda: la densidad fija queda lineal en N y la densidad libre
+crece más rápido, que es justamente el contraste que el punto busca mostrar.
+
+### Metodología de medición
+
+- Se descartan corridas de calentamiento (30 por punto, más 2000 al arrancar)
+  antes de medir: sin eso las primeras corridas se ejecutan interpretadas y el
+  primer punto quedaba ~14 veces por encima de su valor real.
+- Cada muestra cronometra un bloque de corridas de al menos 1 ms y divide por la
+  cantidad. Para los sistemas chicos una búsqueda dura ~1 µs, y a esa escala el
+  ruido del reloj es del orden de la medición misma.
 
 ## Estructura
 
@@ -105,6 +137,8 @@ También escribe un CSV con los datos crudos.
 | `src/ss/tp1/SystemFiles.java` | Lectura/escritura de `static.txt`, `dynamic.txt` y salida de vecinos |
 | `src/ss/tp1/NeighborRenderer.java` | Figura PNG headless (foco + vecinos) |
 | `src/ss/tp1/SimpleChart.java` | Gráficos XY con barras de error y escala log, sin dependencias |
+| `src/ss/tp1/Bench.java` | Medición de tiempos: calentamiento de la JVM y bloques de corridas |
+| `src/ss/tp1/CheckCorrectness.java` | Verificación del CIM contra fuerza bruta (`./run_check.sh`) |
 | `src/ss/tp1/ParticleCanvas.java`, `CalculationPanel.java`, `InteractiveApp.java` | GUI interactiva (Swing) |
 | `GenerateSystem`, `RunCim`, `BenchmarkM`, `BenchmarkN` | CLIs (`main`) para cada punto del enunciado |
 

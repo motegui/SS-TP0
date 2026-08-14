@@ -33,6 +33,17 @@ public final class SimpleChart {
     public static void save(
             Path path, String title, String xLabel, String yLabel,
             boolean logX, boolean logY, List<Series> series) throws IOException {
+        save(path, title, xLabel, yLabel, logX, logY, false, series);
+    }
+
+    /**
+     * @param integerX marca el eje x como de valores enteros (p.ej. M, el número
+     *                 de celdas por lado): las divisiones caen en enteros en vez
+     *                 de repartirse en fracciones sin sentido físico.
+     */
+    public static void save(
+            Path path, String title, String xLabel, String yLabel,
+            boolean logX, boolean logY, boolean integerX, List<Series> series) throws IOException {
         BufferedImage img = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
         Graphics2D g = img.createGraphics();
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
@@ -66,26 +77,37 @@ public final class SimpleChart {
         DoubleUnaryOperator toPx = xv -> PAD_L + (xv - fXMin) / (fXMax - fXMin) * plotW;
         DoubleUnaryOperator toPy = yv -> PAD_T + plotH - (yv - fYMin) / (fYMax - fYMin) * plotH;
 
+        double[] xTicks = ticks(fXMin, fXMax, integerX && !logX);
+        double[] yTicks = ticks(fYMin, fYMax, false);
+
         g.setColor(new Color(235, 235, 235));
-        for (int i = 0; i <= 5; i++) {
-            double fx = fXMin + i * (fXMax - fXMin) / 5;
-            double fy = fYMin + i * (fYMax - fYMin) / 5;
+        for (double fx : xTicks) {
             int px = (int) Math.round(toPx.applyAsDouble(fx));
-            int py = (int) Math.round(toPy.applyAsDouble(fy));
             g.draw(new Line2D.Double(px, PAD_T, px, PAD_T + plotH));
+        }
+        for (double fy : yTicks) {
+            int py = (int) Math.round(toPy.applyAsDouble(fy));
             g.draw(new Line2D.Double(PAD_L, py, PAD_L + plotW, py));
         }
         g.setColor(Color.BLACK);
-        for (int i = 0; i <= 5; i++) {
-            double fx = fXMin + i * (fXMax - fXMin) / 5;
-            double fy = fYMin + i * (fYMax - fYMin) / 5;
+        for (double fx : xTicks) {
             int px = (int) Math.round(toPx.applyAsDouble(fx));
-            int py = (int) Math.round(toPy.applyAsDouble(fy));
-            double xv = logX ? Math.pow(10, fx) : fx;
-            double yv = logY ? Math.pow(10, fy) : fy;
-            g.drawString(fmt(xv), px - 15, PAD_T + plotH + 15);
-            g.drawString(fmt(yv), PAD_L - 75, py + 4);
+            String lab = fmt(logX ? Math.pow(10, fx) : fx);
+            g.drawString(lab, px - fm.stringWidth(lab) / 2, PAD_T + plotH + 16);
         }
+        for (double fy : yTicks) {
+            int py = (int) Math.round(toPy.applyAsDouble(fy));
+            String lab = fmt(logY ? Math.pow(10, fy) : fy);
+            g.drawString(lab, PAD_L - 10 - fm.stringWidth(lab), py + 4);
+        }
+
+        // Ancho de la leyenda según la etiqueta más larga, para que no se corte
+        // contra el borde derecho cuando los rótulos son extensos.
+        int legendTextW = 0;
+        for (Series s : series) {
+            legendTextW = Math.max(legendTextW, fm.stringWidth(s.label()));
+        }
+        int legendX = PAD_L + plotW - legendTextW - 18;
 
         int legendY = PAD_T + 18;
         for (Series s : series) {
@@ -120,8 +142,8 @@ public final class SimpleChart {
                 prevPx = px;
                 prevPy = py;
             }
-            g.fillRect(PAD_L + plotW - 180, legendY - 9, 10, 10);
-            g.drawString(s.label(), PAD_L + plotW - 165, legendY);
+            g.fillRect(legendX, legendY - 9, 10, 10);
+            g.drawString(s.label(), legendX + 15, legendY);
             legendY += 18;
         }
 
@@ -167,7 +189,32 @@ public final class SimpleChart {
         return new double[] {xMin - xPad, xMax + xPad, yMin - yPad, yMax + yPad};
     }
 
+    /** Divisiones del eje: 6 equiespaciadas, o en enteros cuando la magnitud lo es (M). */
+    private static double[] ticks(double lo, double hi, boolean integer) {
+        if (integer) {
+            int a = (int) Math.ceil(lo - 1e-9);
+            int b = (int) Math.floor(hi + 1e-9);
+            if (b > a) {
+                int step = Math.max(1, (int) Math.round((b - a) / 5.0));
+                int count = (b - a) / step + 1;
+                double[] t = new double[count];
+                for (int k = 0; k < count; k++) {
+                    t[k] = a + k * step;
+                }
+                return t;
+            }
+        }
+        double[] t = new double[6];
+        for (int i = 0; i <= 5; i++) {
+            t[i] = lo + i * (hi - lo) / 5;
+        }
+        return t;
+    }
+
     private static String fmt(double v) {
+        if (v == Math.rint(v) && Math.abs(v) < 1000) {
+            return String.format("%.0f", v);
+        }
         if (Math.abs(v) >= 1000 || (Math.abs(v) < 0.001 && v != 0)) {
             return String.format("%.1e", v);
         }

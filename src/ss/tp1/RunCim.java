@@ -54,7 +54,16 @@ public final class RunCim {
 
         SystemFiles.writeNeighbors(output, result.neighbors());
         System.out.println("Lista de vecinos escrita en " + output);
-        System.out.printf("Tiempo de ejecución: %.6f s%n", result.elapsedNanos() / 1e9);
+        System.out.printf("Tiempo de ejecución (primera corrida): %.6f s%n", result.elapsedNanos() / 1e9);
+
+        // La primera corrida se ejecuta antes de que el JIT compile el kernel y
+        // sobrestima el costo real en uno o dos órdenes de magnitud. El valor
+        // comparable con los benchmarks es el de régimen.
+        Bench.warmupJvm(sys.L(), rc, periodic);
+        double[] times = Bench.measure(sys.particles(), sys.L(), M, rc, periodic, 20);
+        double mean = Stats.mean(times);
+        System.out.printf("Tiempo de ejecución (régimen, %d corridas): %.6f s (+/- %.6f)%n",
+                times.length, mean, Stats.stddev(times, mean));
 
         NeighborRenderer.render(sys.particles(), sys.L(), focus, result.neighbors().get(focus), periodic, figure);
         System.out.println("Figura guardada en " + figure);

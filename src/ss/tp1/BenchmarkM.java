@@ -16,7 +16,6 @@ public final class BenchmarkM {
         long seed = 0;
         boolean periodic = false;
         Path out = Path.of("figures/time_vs_M.png");
-        Path csv = Path.of("figures/time_vs_M.csv");
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -29,10 +28,14 @@ public final class BenchmarkM {
                 default -> throw new IllegalArgumentException("Argumento desconocido: " + args[i]);
             }
         }
+        Path csv = withExtension(out, ".csv");
 
         int nMax = ParticleGenerator.maxFeasibleN(L, seed);
-        int nMid = Math.max(50, nMax / 4);
-        System.out.println("N intermedio=" + nMid + "  N máximo=" + nMax);
+        int nMid = Math.max(50, nMax / 2);
+        System.out.println("N intermedio=" + nMid + "  N máximo=" + nMax
+                + "  (repeticiones por punto=" + repeats + ", warm-up=" + Bench.WARMUP_RUNS + ")");
+        System.out.println("Calentando la JVM...");
+        Bench.warmupJvm(L, rc, periodic);
 
         List<SimpleChart.Series> seriesList = new ArrayList<>();
         Color[] colors = {new Color(69, 123, 157), new Color(230, 57, 70)};
@@ -52,18 +55,26 @@ public final class BenchmarkM {
             double[] stds = new double[mMax];
 
             for (int M = 1; M <= mMax; M++) {
-                double[] times = new double[repeats];
-                for (int rep = 0; rep < repeats; rep++) {
-                    times[rep] = CellIndexMethod.run(particles, L, M, rc, periodic).elapsedNanos() / 1e9;
-                }
+                double[] times = Bench.measure(particles, L, M, rc, periodic, repeats);
                 double mean = Stats.mean(times);
                 double std = Stats.stddev(times, mean);
                 Ms[M - 1] = M;
                 means[M - 1] = mean;
                 stds[M - 1] = std;
                 csvLines.add(N + "," + M + "," + mean + "," + std);
-                System.out.printf("  N=%d M=%d -> %.6f s (+/- %.6f)%n", N, M, mean, std);
+                System.out.printf("  N=%d M=%d%s -> %.6f s (+/- %.6f)%n",
+                        N, M, (M == 1 ? " (fuerza bruta)" : ""), mean, std);
             }
+
+            int best = 0;
+            for (int k = 1; k < mMax; k++) {
+                if (means[k] < means[best]) {
+                    best = k;
+                }
+            }
+            System.out.printf("  -> M óptimo para N=%d: M=%d (%.6f s); M máximo permitido: %d%n",
+                    N, (int) Ms[best], means[best], mMax);
+
             seriesList.add(new SimpleChart.Series("N=" + N, colors[colorIdx++ % colors.length], Ms, means, stds));
         }
 
@@ -84,7 +95,18 @@ public final class BenchmarkM {
                 .max().orElse(1);
         boolean logY = maxVal / Math.max(minVal, 1e-12) > 50;
 
-        SimpleChart.save(out, "CIM: tiempo medio vs M", "M (celdas por lado)", "Tiempo (s)", logX, logY, seriesList);
+        SimpleChart.save(out,
+                "CIM: tiempo medio vs M (" + repeats + " repeticiones; M=1 es fuerza bruta)",
+                "M (celdas por lado)", "Tiempo (s)", logX, logY, true, seriesList);
         System.out.println("Guardado " + out + " y " + csv);
+    }
+
+    /** Mismo path que la figura pero con otra extensión, para que -o mueva ambos archivos. */
+    private static Path withExtension(Path path, String ext) {
+        String name = path.getFileName().toString();
+        int dot = name.lastIndexOf('.');
+        String base = (dot > 0) ? name.substring(0, dot) : name;
+        Path parent = path.getParent();
+        return (parent == null) ? Path.of(base + ext) : parent.resolve(base + ext);
     }
 }

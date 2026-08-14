@@ -21,7 +21,6 @@ public final class BenchmarkN {
         long seed = 0;
         boolean periodic = false;
         Path out = Path.of("figures/time_vs_N.png");
-        Path csv = Path.of("figures/time_vs_N.csv");
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -35,6 +34,7 @@ public final class BenchmarkN {
                 default -> throw new IllegalArgumentException("Argumento desconocido: " + args[i]);
             }
         }
+        Path csv = withExtension(out, ".csv");
         if (M < 1) {
             System.err.println("Debe indicar -M <valor óptimo obtenido con BenchmarkM>");
             System.exit(1);
@@ -48,6 +48,8 @@ public final class BenchmarkN {
 
         int nMax = ParticleGenerator.maxFeasibleN(L0, seed);
         int[] nValues = geomSpace(10, nMax, 12);
+        System.out.println("Calentando la JVM (repeticiones por punto=" + repeats + ")...");
+        Bench.warmupJvm(L0, rc, periodic);
 
         // 4.1: densidad libre (L0 fijo)
         double[] meansFree = new double[nValues.length];
@@ -55,7 +57,7 @@ public final class BenchmarkN {
         for (int k = 0; k < nValues.length; k++) {
             int N = nValues[k];
             List<Particle> particles = ParticleGenerator.generate(N, L0, seed + N);
-            double[] times = timeRepeated(particles, L0, M, rc, periodic, repeats);
+            double[] times = Bench.measure(particles, L0, M, rc, periodic, repeats);
             meansFree[k] = Stats.mean(times);
             stdsFree[k] = Stats.stddev(times, meansFree[k]);
             System.out.printf("[libre] N=%d -> %.6f s (+/- %.6f)%n", N, meansFree[k], stdsFree[k]);
@@ -65,20 +67,36 @@ public final class BenchmarkN {
         int nStar = nValues[nValues.length / 2];
         double rho = nStar / (L0 * L0);
 
-        // 4.2: densidad fija (L escala con N)
+        // 4.2: densidad fija (L escala con N).
+        //
+        // Acá M NO puede quedar fijo. Lo que el punto 3 optimiza no es el número
+        // de celdas sino su tamaño h=L/M: es h frente a rc lo que fija cuántas
+        // partículas se revisan por celda. Si se agranda L dejando M=13, h crece
+        // con L, cada celda acumula O(L^2) partículas y el CIM degenera a O(N^2)
+        // -- además, para los L chicos M=13 viola L/M > rc+2r y esos puntos se
+        // perdían. Manteniendo h constante (M proporcional a L) la comparación
+        // es a igual carga por celda y se recupera el comportamiento lineal.
+        double h0 = L0 / M;
         List<Double> xFixed = new ArrayList<>();
         List<Double> meanFixed = new ArrayList<>();
         List<Double> stdFixed = new ArrayList<>();
+        List<Integer> mFixed = new ArrayList<>();
         for (int N : nValues) {
             double L = Math.sqrt(N / rho);
+            int mL = Math.max(1, (int) Math.floor(L / h0));
+            int mMaxL = CellIndexMethod.maxM(L, rc, ParticleGenerator.R_MAX);
+            if (mMaxL >= 1) {
+                mL = Math.min(mL, mMaxL);
+            }
             try {
                 List<Particle> particles = ParticleGenerator.generate(N, L, seed + 10_000 + N);
-                double[] times = timeRepeated(particles, L, M, rc, periodic, repeats);
+                double[] times = Bench.measure(particles, L, mL, rc, periodic, repeats);
                 double mean = Stats.mean(times);
                 xFixed.add((double) N);
                 meanFixed.add(mean);
                 stdFixed.add(Stats.stddev(times, mean));
-                System.out.printf("[fija]  N=%d L=%.3f -> %.6f s%n", N, L, mean);
+                mFixed.add(mL);
+                System.out.printf("[fija]  N=%d L=%.3f M=%d (h=%.3f) -> %.6f s%n", N, L, mL, L / mL, mean);
             } catch (IllegalArgumentException | IllegalStateException ex) {
                 System.err.println("Aviso: se omite N=" + N + " en densidad fija (L=" + String.format("%.3f", L)
                         + "): " + ex.getMessage());
@@ -92,21 +110,25 @@ public final class BenchmarkN {
 
         List<SimpleChart.Series> seriesList = new ArrayList<>();
         seriesList.add(new SimpleChart.Series(
-                "densidad libre (L=" + L0 + ")", new Color(69, 123, 157), xFreeArr, meansFree, stdsFree));
+                "densidad libre (L=" + L0 + ", M=" + M + ")",
+                new Color(69, 123, 157), xFreeArr, meansFree, stdsFree));
         seriesList.add(new SimpleChart.Series(
-                String.format("densidad fija (rho=%.4f)", rho),
+                String.format("densidad fija (rho=%.4f, h=%.3f)", rho, h0),
                 new Color(230, 57, 70),
                 toArray(xFixed), toArray(meanFixed), toArray(stdFixed)));
 
         List<String> csvLines = new ArrayList<>();
-        csvLines.add("N,mean_free_s,std_free_s");
+        csvLines.add("N,M,mean_free_s,std_free_s");
         for (int i = 0; i < nValues.length; i++) {
-            csvLines.add(nValues[i] + "," + meansFree[i] + "," + stdsFree[i]);
+            csvLines.add(nValues[i] + "," + M + "," + meansFree[i] + "," + stdsFree[i]);
         }
         csvLines.add("");
-        csvLines.add("N,mean_fixed_density_s,std_fixed_density_s,rho=" + rho);
+        csvLines.add("N,L,M,mean_fixed_density_s,std_fixed_density_s,rho=" + rho);
         for (int i = 0; i < xFixed.size(); i++) {
-            csvLines.add(xFixed.get(i).intValue() + "," + meanFixed.get(i) + "," + stdFixed.get(i));
+            csvLines.add(xFixed.get(i).intValue()
+                    + "," + Math.sqrt(xFixed.get(i) / rho)
+                    + "," + mFixed.get(i)
+                    + "," + meanFixed.get(i) + "," + stdFixed.get(i));
         }
 
         Files.createDirectories(out.toAbsolutePath().getParent());
@@ -118,17 +140,19 @@ public final class BenchmarkN {
         double maxVal = Math.max(Stats.max(meansFree), Stats.max(toArray(meanFixed)));
         boolean logY = maxVal / Math.max(minVal, 1e-12) > 30;
 
-        SimpleChart.save(out, "CIM: tiempo medio vs N (M=" + M + ")", "N", "Tiempo (s)", logX, logY, seriesList);
+        SimpleChart.save(out,
+                "CIM: tiempo medio vs N (" + repeats + " repeticiones, tamaño de celda h=" + String.format("%.3f", h0) + ")",
+                "N", "Tiempo (s)", logX, logY, seriesList);
         System.out.println("Guardado " + out + " y " + csv + "  (N*=" + nStar + ", rho=" + rho + ")");
     }
 
-    private static double[] timeRepeated(
-            List<Particle> particles, double L, int M, double rc, boolean periodic, int repeats) {
-        double[] times = new double[repeats];
-        for (int rep = 0; rep < repeats; rep++) {
-            times[rep] = CellIndexMethod.run(particles, L, M, rc, periodic).elapsedNanos() / 1e9;
-        }
-        return times;
+    /** Mismo path que la figura pero con otra extensión, para que -o mueva ambos archivos. */
+    private static Path withExtension(Path path, String ext) {
+        String name = path.getFileName().toString();
+        int dot = name.lastIndexOf('.');
+        String base = (dot > 0) ? name.substring(0, dot) : name;
+        Path parent = path.getParent();
+        return (parent == null) ? Path.of(base + ext) : parent.resolve(base + ext);
     }
 
     private static int[] geomSpace(int lo, int hi, int count) {

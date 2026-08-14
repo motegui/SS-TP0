@@ -36,6 +36,7 @@ public final class CellIndexMethod {
     private final double rMax;
     private final double h;
     private final int layers;
+    private final boolean needsDedup;
     private final List<Integer>[] grid; // null si M == 1 (fuerza bruta)
 
     @SuppressWarnings("unchecked")
@@ -61,6 +62,11 @@ public final class CellIndexMethod {
         }
         this.h = L / M;
         this.layers = (M == 1) ? 0 : Math.max(1, (int) Math.ceil((rMax + rc + rMax) / h));
+        // Con PBC y una grilla más chica que la ventana de celdas escaneadas, el
+        // wrap hace que una misma celda caiga varias veces en el barrido y haya
+        // que deduplicar candidatos. En cualquier otro caso el barrido ya visita
+        // cada celda una sola vez y el HashSet sería puro overhead.
+        this.needsDedup = periodic && M > 1 && M < 2 * this.layers + 1;
 
         if (M == 1) {
             this.grid = null;
@@ -83,7 +89,14 @@ public final class CellIndexMethod {
         if (L <= hMin) {
             return 0;
         }
-        return (int) Math.floor(L / hMin);
+        // La condición es estricta (L/M > hMin), así que si L/hMin da un entero
+        // exacto ese M no sirve: hay que bajar uno. Ej.: L=20, rc=1, r=0 -> M=20
+        // daría h=1=hMin, que el constructor rechaza.
+        int m = (int) Math.floor(L / hMin);
+        while (m >= 1 && L / m <= hMin) {
+            m--;
+        }
+        return m;
     }
 
     /** Corre una búsqueda completa de vecinos, midiendo el tiempo total (incluye construir la grilla). */
@@ -141,7 +154,7 @@ public final class CellIndexMethod {
             for (int i = 0; i < n; i++) {
                 Particle pi = particles.get(i);
                 CellCoord home = cellOf(pi.x(), pi.y());
-                Set<Integer> seen = new HashSet<>();
+                Set<Integer> seen = needsDedup ? new HashSet<>() : null;
                 for (int dx = -layers; dx <= layers; dx++) {
                     for (int dy = -layers; dy <= layers; dy++) {
                         CellCoord c = wrapCell(home.cx() + dx, home.cy() + dy);
@@ -149,7 +162,7 @@ public final class CellIndexMethod {
                             continue;
                         }
                         for (int j : grid[index(c)]) {
-                            if (j <= i || !seen.add(j)) {
+                            if (j <= i || (seen != null && !seen.add(j))) {
                                 continue;
                             }
                             Particle pj = particles.get(j);
@@ -192,7 +205,7 @@ public final class CellIndexMethod {
             }
         } else {
             home = cellOf(pi.x(), pi.y());
-            Set<Integer> seen = new HashSet<>();
+            Set<Integer> seen = needsDedup ? new HashSet<>() : null;
             for (int dx = -layers; dx <= layers; dx++) {
                 for (int dy = -layers; dy <= layers; dy++) {
                     CellCoord c = wrapCell(home.cx() + dx, home.cy() + dy);
@@ -201,7 +214,7 @@ public final class CellIndexMethod {
                     }
                     scanned.add(c);
                     for (int j : grid[index(c)]) {
-                        if (j == i || !seen.add(j)) {
+                        if (j == i || (seen != null && !seen.add(j))) {
                             continue;
                         }
                         addCandidate(pi, particles.get(j), c, candidates, neighbors);
